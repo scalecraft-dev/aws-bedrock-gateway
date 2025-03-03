@@ -23,9 +23,18 @@ Environment variables:
 
 ## Running
 
-1. Set up AWS credentials with Bedrock access - Uses default [AWS credentials chain](https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/configuring-sdk.html#specifying-credentials).
-2. Configure environment variables (optional)
-3. Run the server:
+The app uses the AWS SDK for Go, so you need to set up AWS credentials. We use the default [AWS credentials chain](https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/configuring-sdk.html#specifying-credentials).
+
+### Docker
+
+```bash
+export DOCKER_DEFAULT_PLATFORM=linux/arm64 # This is for Apple Silicon, change to linux/amd64 for Intel
+docker run -p 8080:8000 -e AWS_REGION=us-east-1 -e DEFAULT_MODEL=anthropic.claude-3-sonnet-20240229-v1:0 scalecraft/aws-bedrock-gateway:latest
+```
+
+### Metal
+
+1. Configure environment variables (optional). The application will load a `.env` file in the root directory if it exists.
 
 ```bash
 go run .
