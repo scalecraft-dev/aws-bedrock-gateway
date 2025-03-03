@@ -5,6 +5,7 @@ go 1.23.1
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.8
+	github.com/aws/aws-sdk-go-v2/service/bedrock v1.27.0
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.26.0
 	github.com/gin-gonic/gin v1.10.0
 	github.com/joho/godotenv v1.5.1

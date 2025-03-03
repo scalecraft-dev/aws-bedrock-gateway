@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -14,22 +15,32 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/bedrock"
+	"github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
 // ChatRequest represents the incoming chat request
 type ChatRequest struct {
-	Messages            []Message     `json:"messages" binding:"required"`
-	Model               string        `json:"model" binding:"required"`
-	Temperature         float32       `json:"temperature,omitempty"`
-	TopP                float32       `json:"top_p,omitempty"`
-	MaxTokens           int           `json:"max_tokens,omitempty"`
-	Stop                []string      `json:"stop,omitempty"`
-	Tools               []Tool        `json:"tools,omitempty"`
-	ToolChoice          interface{}   `json:"tool_choice,omitempty"`
-	StreamOptions       StreamOptions `json:"stream_options,omitempty"`
-	ReasoningEffort     string        `json:"reasoning_effort,omitempty"`
-	MaxCompletionTokens int           `json:"max_completion_tokens,omitempty"`
+	Messages         []Message   `json:"messages" binding:"required"`
+	Model            string      `json:"model" binding:"required"`
+	Temperature      float32     `json:"temperature,omitempty"`
+	TopP             float32     `json:"top_p,omitempty"`
+	MaxTokens        int         `json:"max_tokens,omitempty"`
+	Stop             []string    `json:"stop,omitempty"`
+	Stream           bool        `json:"stream,omitempty"`
+	N                int         `json:"n,omitempty"`
+	PresencePenalty  float32     `json:"presence_penalty,omitempty"`
+	FrequencyPenalty float32     `json:"frequency_penalty,omitempty"`
+	User             string      `json:"user,omitempty"`
+	Functions        []Function  `json:"functions,omitempty"`
+	FunctionCall     interface{} `json:"function_call,omitempty"`
+	ResponseFormat   *struct {
+		Type string `json:"type,omitempty"`
+	} `json:"response_format,omitempty"`
+	Seed       int64       `json:"seed,omitempty"`
+	Tools      []Tool      `json:"tools,omitempty"`
+	ToolChoice interface{} `json:"tool_choice,omitempty"`
 }
 
 // StreamOptions represents options for streaming responses
@@ -39,10 +50,10 @@ type StreamOptions struct {
 
 // Message represents a single message in the conversation
 type Message struct {
-	Role       string      `json:"role" binding:"required"`
-	Content    interface{} `json:"content" binding:"required"`
-	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID string      `json:"tool_call_id,omitempty"`
+	Role         string      `json:"role" binding:"required"`
+	Content      interface{} `json:"content" binding:"required"`
+	Name         string      `json:"name,omitempty"`
+	FunctionCall interface{} `json:"function_call,omitempty"`
 }
 
 // TextContent represents text content in a message
@@ -84,13 +95,12 @@ type ToolCall struct {
 
 // ChatResponse represents the response from the Bedrock service
 type ChatResponse struct {
-	ID                string   `json:"id"`
-	Object            string   `json:"object"`
-	Created           int64    `json:"created"`
-	Model             string   `json:"model"`
-	SystemFingerprint string   `json:"system_fingerprint"`
-	Choices           []Choice `json:"choices"`
-	Usage             Usage    `json:"usage"`
+	ID      string   `json:"id"`
+	Object  string   `json:"object"`
+	Created int64    `json:"created"`
+	Model   string   `json:"model"`
+	Choices []Choice `json:"choices"`
+	Usage   Usage    `json:"usage"`
 }
 
 // Choice represents a choice in the response
@@ -98,15 +108,12 @@ type Choice struct {
 	Index        int                 `json:"index"`
 	Message      ChatResponseMessage `json:"message"`
 	FinishReason string              `json:"finish_reason"`
-	Logprobs     interface{}         `json:"logprobs"`
 }
 
 // ChatResponseMessage represents a message in the response
 type ChatResponseMessage struct {
-	Role             string     `json:"role"`
-	Content          string     `json:"content,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 // Usage represents token usage information
@@ -156,7 +163,7 @@ func (s *BedrockService) ProcessChat(ctx context.Context, req ChatRequest) (stri
 	}
 
 	// Parse the response based on the model
-	return parseResponseFromModel(req.Model, resp.Body)
+	return parseResponseFromModel(resp.Body)
 }
 
 // ProcessChatStream sends the chat request to AWS Bedrock and returns a stream of responses
@@ -182,166 +189,52 @@ func (s *BedrockService) ProcessChatStream(ctx context.Context, req ChatRequest)
 
 // formatPayloadForModel formats the request payload based on the model
 func formatPayloadForModel(req ChatRequest) ([]byte, error) {
-	// Implementation depends on the specific models you want to support
-
-	// For Claude models
-	if strings.HasPrefix(req.Model, "anthropic.claude") {
-		return formatClaudePayload(req)
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 2048 // Default max tokens
 	}
 
-	// For Llama models
-	if strings.HasPrefix(req.Model, "meta.llama") {
-		return formatLlamaPayload(req)
+	temperature := req.Temperature
+	if temperature == 0 {
+		temperature = 0.7 // Default temperature
 	}
 
-	// Add more model formats as needed
-
-	return nil, errors.New("unsupported model")
-}
-
-// formatClaudePayload formats the request for Claude models
-func formatClaudePayload(req ChatRequest) ([]byte, error) {
-	// Build the conversation history
-	var prompt strings.Builder
-
-	for _, msg := range req.Messages {
-		switch msg.Role {
-		case "user":
-			prompt.WriteString("Human: ")
-			if content, ok := msg.Content.(string); ok {
-				prompt.WriteString(content)
-			} else if contentList, ok := msg.Content.([]interface{}); ok {
-				// Handle multimodal content
-				for _, part := range contentList {
-					if partMap, ok := part.(map[string]interface{}); ok {
-						if partMap["type"] == "text" {
-							prompt.WriteString(partMap["text"].(string))
-						}
-						// Handle image content if needed
-					}
-				}
-			}
-			prompt.WriteString("\n\n")
-		case "assistant":
-			prompt.WriteString("Assistant: ")
-			if content, ok := msg.Content.(string); ok {
-				prompt.WriteString(content)
-			}
-			prompt.WriteString("\n\n")
-		case "system":
-			// System messages are handled differently in Claude
-			// They are typically added at the beginning
-			continue
-		}
-	}
-
-	prompt.WriteString("Assistant: ")
-
-	// Create the Claude payload
-	claudePayload := map[string]interface{}{
-		"prompt":               prompt.String(),
-		"max_tokens_to_sample": req.MaxTokens,
-		"temperature":          req.Temperature,
-		"top_p":                req.TopP,
-	}
-
-	if len(req.Stop) > 0 {
-		claudePayload["stop_sequences"] = req.Stop
-	}
-
-	// Add system prompt if present
-	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			if content, ok := msg.Content.(string); ok {
-				claudePayload["system"] = content
-				break
-			}
-		}
-	}
-
-	return json.Marshal(claudePayload)
-}
-
-// formatLlamaPayload formats the request for Llama models
-func formatLlamaPayload(req ChatRequest) ([]byte, error) {
-	// Build the conversation history
-	var messages []map[string]interface{}
-
-	for _, msg := range req.Messages {
-		message := map[string]interface{}{
-			"role": msg.Role,
-		}
-
-		if content, ok := msg.Content.(string); ok {
-			message["content"] = content
-		} else if contentList, ok := msg.Content.([]interface{}); ok {
-			// Handle multimodal content
-			var contentParts []map[string]interface{}
-			for _, part := range contentList {
-				if partMap, ok := part.(map[string]interface{}); ok {
-					contentParts = append(contentParts, partMap)
-				}
-			}
-			message["content"] = contentParts
-		}
-
-		messages = append(messages, message)
-	}
-
-	// Create the Llama payload
-	llamaPayload := map[string]interface{}{
-		"messages":    messages,
-		"max_gen_len": req.MaxTokens,
-		"temperature": req.Temperature,
+	payload := map[string]interface{}{
+		"messages":    req.Messages,
+		"max_tokens":  maxTokens,
+		"temperature": temperature,
 		"top_p":       req.TopP,
 	}
 
-	if len(req.Stop) > 0 {
-		llamaPayload["stop"] = req.Stop
+	// Add anthropic_version for Claude models
+	if strings.Contains(req.Model, "anthropic.claude") || strings.Contains(req.Model, ".anthropic.") {
+		payload["anthropic_version"] = "bedrock-2023-05-31"
 	}
 
-	return json.Marshal(llamaPayload)
+	return json.Marshal(payload)
 }
 
 // parseResponseFromModel parses the response based on the model
-func parseResponseFromModel(model string, responseBody []byte) (string, error) {
-	// Parse based on model
-	if strings.HasPrefix(model, "anthropic.claude") {
-		return parseClaudeResponse(responseBody)
-	} else if strings.HasPrefix(model, "meta.llama") {
-		return parseLlamaResponse(responseBody)
+func parseResponseFromModel(responseBody []byte) (string, error) {
+	// Log the raw response for debugging
+	log.Printf("Raw response: %s", string(responseBody))
+
+	var response struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
 	}
 
-	// Default parsing
-	return string(responseBody), nil
-}
-
-// parseClaudeResponse parses the response from Claude models
-func parseClaudeResponse(responseBody []byte) (string, error) {
-	var response map[string]interface{}
 	if err := json.Unmarshal(responseBody, &response); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to parse response: %v", err)
 	}
 
-	if completion, ok := response["completion"].(string); ok {
-		return completion, nil
+	if len(response.Content) > 0 {
+		return response.Content[0].Text, nil
 	}
 
-	return string(responseBody), nil
-}
-
-// parseLlamaResponse parses the response from Llama models
-func parseLlamaResponse(responseBody []byte) (string, error) {
-	var response map[string]interface{}
-	if err := json.Unmarshal(responseBody, &response); err != nil {
-		return "", err
-	}
-
-	if generation, ok := response["generation"].(string); ok {
-		return generation, nil
-	}
-
-	return string(responseBody), nil
+	return "", errors.New("no content in response")
 }
 
 // GenerateMessageID generates a unique message ID
@@ -413,13 +306,48 @@ func ConvertFinishReason(finishReason string) string {
 	return strings.ToLower(finishReason)
 }
 
-// ListBedrockModels returns a list of available Bedrock models
+// ListBedrockModels lists available Bedrock models
 func (s *BedrockService) ListBedrockModels(ctx context.Context) ([]string, error) {
-	// This is a simplified implementation
-	// In a real implementation, you would call the Bedrock API to get the list of models
-	return []string{
-		"anthropic.claude-v2",
-		"anthropic.claude-3-sonnet-20240229-v1:0",
-		"meta.llama2-13b-chat-v1",
-	}, nil
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load SDK config: %v", err)
+	}
+
+	bedrockClient := bedrock.NewFromConfig(cfg)
+	var modelIDs []string
+
+	// Get foundation models
+	foundationResp, err := bedrockClient.ListFoundationModels(ctx, &bedrock.ListFoundationModelsInput{
+		ByOutputModality: types.ModelModalityText,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unable to list foundation models: %v", err)
+	}
+
+	// Process foundation models
+	for _, model := range foundationResp.ModelSummaries {
+		if model.ModelLifecycle != nil &&
+			model.ModelLifecycle.Status == "ACTIVE" &&
+			*model.ResponseStreamingSupported {
+			modelIDs = append(modelIDs, *model.ModelId)
+		}
+	}
+
+	// Get inference profiles
+	profileResp, err := bedrockClient.ListInferenceProfiles(ctx, &bedrock.ListInferenceProfilesInput{
+		MaxResults: aws.Int32(1000),
+		TypeEquals: types.InferenceProfileTypeSystemDefined,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unable to list inference profiles: %v", err)
+	}
+
+	// Add inference profile models
+	for _, profile := range profileResp.InferenceProfileSummaries {
+		if profile.InferenceProfileId != nil {
+			modelIDs = append(modelIDs, *profile.InferenceProfileId)
+		}
+	}
+
+	return modelIDs, nil
 }

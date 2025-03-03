@@ -1,9 +1,10 @@
 package main
 
 import (
-	"errors"
 	"log"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -11,16 +12,13 @@ import (
 // SetupRoutes configures all the routes for the application
 func SetupRoutes(r gin.IRouter, bedrockService *BedrockService) {
 	// Chat endpoint
-	r.POST("/chat", handleChat(bedrockService))
+	r.POST("/chat/completions", handleChat(bedrockService))
 
 	// Stream chat endpoint
-	r.POST("/chat/stream", handleChatStream(bedrockService))
+	r.POST("/chat/completions/stream", handleChatStream(bedrockService))
 
 	// List models endpoint
 	r.GET("/models", handleListModels(bedrockService))
-
-	// Embeddings endpoint
-	r.POST("/embeddings", handleEmbeddings(bedrockService))
 }
 
 // handleChat handles the chat completion endpoint
@@ -28,22 +26,23 @@ func handleChat(bedrockService *BedrockService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var chatReq ChatRequest
 		if err := c.ShouldBindJSON(&chatReq); err != nil {
+			log.Printf("Error binding JSON: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-
+		log.Printf("Received chat request: %+v", chatReq)
 		response, err := bedrockService.ProcessChat(c.Request.Context(), chatReq)
 		if err != nil {
+			log.Printf("Error processing chat: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 
 		c.JSON(http.StatusOK, ChatResponse{
-			ID:                GenerateMessageID(),
-			Object:            "chat.completion",
-			Created:           int64(0), // Set to current timestamp in production
-			Model:             chatReq.Model,
-			SystemFingerprint: "fp",
+			ID:      GenerateMessageID(),
+			Object:  "chat.completion",
+			Created: time.Now().Unix(),
+			Model:   chatReq.Model,
 			Choices: []Choice{
 				{
 					Index: 0,
@@ -55,9 +54,9 @@ func handleChat(bedrockService *BedrockService) gin.HandlerFunc {
 				},
 			},
 			Usage: Usage{
-				PromptTokens:     0, // Set to actual token counts in production
-				CompletionTokens: 0,
-				TotalTokens:      0,
+				PromptTokens:     1, // TODO: Implement actual token counting
+				CompletionTokens: 1,
+				TotalTokens:      2,
 			},
 		})
 	}
@@ -111,7 +110,18 @@ func handleListModels(bedrockService *BedrockService) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"models": models})
+		// Format response in OpenAI-compatible format
+		modelList := make([]gin.H, len(models))
+		for i, model := range models {
+			modelList[i] = gin.H{
+				"id":       model,
+				"object":   "model",
+				"created":  1706745600,                   // You might want to adjust this timestamp
+				"owned_by": strings.Split(model, ".")[0], // Extract owner from model ID
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{"data": modelList})
 	}
 }
 
@@ -132,11 +142,4 @@ func handleEmbeddings(bedrockService *BedrockService) gin.HandlerFunc {
 
 		c.JSON(http.StatusOK, response)
 	}
-}
-
-// extractBytesFromEvent attempts to extract bytes from an event
-func extractBytesFromEvent(event interface{}) ([]byte, error) {
-	// Use reflection or type assertions to try to extract bytes
-	// This is a simplified example
-	return nil, errors.New("unable to extract bytes from event")
 }
