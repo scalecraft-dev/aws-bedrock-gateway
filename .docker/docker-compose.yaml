@@ -19,7 +19,8 @@ services:
       dockerfile: .docker/Dockerfile
     environment:
       - AWS_REGION=${AWS_REGION:-us-east-1}
-      - PORT=8080
+      - AWS_PROFILE=${AWS_PROFILE:-default}
+      - PORT=8000
       - API_ROUTE_PREFIX=/api/v1
       - DEFAULT_MODEL=${DEFAULT_MODEL:-anthropic.claude-3-sonnet-20240229-v1:0}
       - DEFAULT_EMBEDDING_MODEL=${DEFAULT_EMBEDDING_MODEL:-cohere.embed-multilingual-v3}
@@ -28,9 +29,9 @@ services:
     volumes:
       - ~/.aws:/root/.aws:ro  # Mount AWS config directory as read-only
     ports:
-      - "8080:8080"
+      - "8000:8000"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/models"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/api/v1/models"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -38,8 +39,8 @@ services:
   openwebui:
     image: ghcr.io/open-webui/open-webui:main
     environment:
-      - OPENAI_API_BASE=http://bedrock-gateway:8080/api/v1
-      - OPENAI_API_KEY=dummy # Not used but required
+      - OPENAI_API_BASE_URL=http://bedrock-gateway:8000/api/v1
+      - OPENAI_API_KEYS=bedrock
       - DEFAULT_MODEL=${DEFAULT_MODEL:-anthropic.claude-3-sonnet-20240229-v1:0}
       - ENDPOINTS_TYPE=openai
       - HOST=0.0.0.0

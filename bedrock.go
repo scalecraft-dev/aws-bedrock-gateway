@@ -199,16 +199,97 @@ func formatPayloadForModel(req ChatRequest) ([]byte, error) {
 		temperature = 0.7 // Default temperature
 	}
 
+	// Special handling for Claude models
+	if strings.Contains(req.Model, "anthropic.claude") || strings.Contains(req.Model, ".anthropic.") {
+		// Process messages for Claude
+		var systemContent string
+		var formattedMessages []Message
+
+		// Extract system messages and save other messages
+		for _, msg := range req.Messages {
+			if msg.Role == "system" {
+				// Extract system message content
+				switch c := msg.Content.(type) {
+				case string:
+					systemContent = c
+				case []interface{}:
+					// Handle content blocks (text)
+					for _, block := range c {
+						if contentMap, ok := block.(map[string]interface{}); ok {
+							if contentMap["type"] == "text" {
+								if text, ok := contentMap["text"].(string); ok {
+									systemContent += text
+								}
+							}
+						}
+					}
+				}
+			} else {
+				// Keep non-system messages
+				formattedMessages = append(formattedMessages, msg)
+			}
+		}
+
+		// If we found a system message, add it to the first user message or add as a new message
+		if systemContent != "" {
+			// Format system message with Claude's format
+			systemInstruction := "Human: <system>\n" + systemContent + "\n</system>\n\n"
+
+			// Find first user message to prepend the system message to
+			foundUser := false
+			for i := range formattedMessages {
+				if formattedMessages[i].Role == "user" {
+					// Get user content
+					var userContent string
+					switch c := formattedMessages[i].Content.(type) {
+					case string:
+						userContent = c
+					case []interface{}:
+						for _, block := range c {
+							if contentMap, ok := block.(map[string]interface{}); ok {
+								if contentMap["type"] == "text" {
+									if text, ok := contentMap["text"].(string); ok {
+										userContent += text
+									}
+								}
+							}
+						}
+					}
+
+					// Combine system and user content
+					formattedMessages[i].Content = systemInstruction + userContent
+					foundUser = true
+					break
+				}
+			}
+
+			// If no user message found, create one
+			if !foundUser {
+				formattedMessages = append([]Message{{
+					Role:    "user",
+					Content: systemInstruction,
+				}}, formattedMessages...)
+			}
+		}
+
+		// Create Claude-specific payload
+		payload := map[string]interface{}{
+			"messages":          formattedMessages,
+			"max_tokens":        maxTokens,
+			"temperature":       temperature,
+			"top_p":             req.TopP,
+			"anthropic_version": "bedrock-2023-05-31",
+		}
+
+		return json.Marshal(payload)
+	}
+
+	// For non-Claude models, use the original message format
 	payload := map[string]interface{}{
 		"messages":    req.Messages,
 		"max_tokens":  maxTokens,
 		"temperature": temperature,
 		"top_p":       req.TopP,
-	}
-
-	// Add anthropic_version for Claude models
-	if strings.Contains(req.Model, "anthropic.claude") || strings.Contains(req.Model, ".anthropic.") {
-		payload["anthropic_version"] = "bedrock-2023-05-31"
 	}
 
 	return json.Marshal(payload)
